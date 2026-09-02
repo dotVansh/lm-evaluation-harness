@@ -215,12 +215,18 @@ class GGUFLM(LM):
     def _loglikelihood_one(self, item):
         args, id_slot = item
         context, continuation = args
-        # tokenize the same way the HF backend does: context and continuation
-        # encoded separately (continuation without special tokens)
-        continuation_ids = self._tokenize(continuation, add_special=False)
+        # Migrate trailing whitespace from context to continuation (match HF backend)
+        n_spaces = len(context) - len(context.rstrip())
+        if n_spaces > 0:
+            continuation = context[-n_spaces:] + continuation
+            context = context[:-n_spaces]
+        # Encode context + continuation together, then split at context boundary
+        # (BPE-correct: matches the HF backend's tok_encode approach)
+        whole_ids = self._tokenize(context + continuation, add_special=True)
+        context_ids = self._tokenize(context, add_special=True)
+        continuation_ids = whole_ids[len(context_ids):]
         if not continuation_ids:
             return (0.0, True)
-        context_ids = self._tokenize(context, add_special=True)
         total = 0.0
         is_greedy = True
         for j, target_id in enumerate(continuation_ids):

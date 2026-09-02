@@ -88,12 +88,13 @@ class GGUFLMTest(unittest.TestCase):
             res = lm.loglikelihood(llm_instances([("x", "ab")]))
         self.assertEqual(res, [(-2.5, True)])
 
-        # continuation tokenized separately, without special tokens;
-        # context tokenized once, with special tokens (fake BOS prepended)
+        # context+continuation encoded together and split at the context
+        # boundary (matches the HF backend); context also encoded separately;
+        # both with special tokens (fake BOS prepended)
         tok_calls = calls["tokenize"]
         self.assertEqual(
             {(c["content"], c["add_special"]) for c in tok_calls},
-            {("x", True), ("ab", False)},
+            {("x", True), ("xab", True)},
         )
         # one scoring request per continuation token, with correct prompts
         # ([BOS, 'x'] ++ prefix) and logit bias on the target token
@@ -101,6 +102,16 @@ class GGUFLMTest(unittest.TestCase):
         biases = [c["logit_bias"][0][0] for c in calls["completions"]]
         self.assertEqual(prompts, [[1, ord("x")], [1, ord("x"), ord("a")]])
         self.assertEqual(biases, [ord("a"), ord("b")])
+
+    def test_loglikelihood_migrates_trailing_whitespace(self):
+        fake_post, calls = make_fake_server()
+        with patch("lm_eval.models.gguf.requests.post", side_effect=fake_post):
+            lm = GGUFLM(base_url, parallel=1)
+            res = lm.loglikelihood(llm_instances([("x ", "ab")]))
+        # trailing space moved from context into the continuation
+        self.assertEqual(res, [(-3.0, True)])
+        biases = [c["logit_bias"][0][0] for c in calls["completions"]]
+        self.assertEqual(biases, [ord(" "), ord("a"), ord("b")])
 
     def test_loglikelihood_empty_continuation(self):
         fake_post, calls = make_fake_server()
