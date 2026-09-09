@@ -174,6 +174,31 @@ class GGUFLMTest(unittest.TestCase):
             res, ["generated text until stop1", "generated text until stop2"]
         )
 
+    def test_generate_until_max_token_aliases(self):
+        fake_post, calls = make_fake_server()
+        with patch("lm_eval.models.gguf.requests.post", side_effect=fake_post):
+            lm = GGUFLM(base_url, parallel=1)
+            requests = [
+                Instance(
+                    request_type="generate_until",
+                    doc={"input": doc},
+                    arguments=(doc, gen_kwargs),
+                    idx=i,
+                )
+                for i, (doc, gen_kwargs) in enumerate(
+                    [
+                        ("a", {"max_tokens": "512"}),  # CLI-style string alias
+                        ("b", {"max_gen_toks": 8, "max_tokens": "512"}),
+                        ("c", {}),
+                    ]
+                )
+            ]
+            lm.generate_until(requests)
+        max_tokens = [c.get("max_tokens") for c in calls["completions"]]
+        # alias resolved and int()-converted; max_gen_toks wins over aliases;
+        # backend default (256) when the task specifies nothing
+        self.assertEqual(max_tokens, [512, 8, 256])
+
     def test_parallel_mapping_preserves_order(self):
         lm = GGUFLM(base_url, parallel=3)
         items = list(range(20))

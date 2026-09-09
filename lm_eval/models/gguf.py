@@ -9,6 +9,7 @@ from tqdm import tqdm
 
 from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
+from lm_eval.models.utils import normalize_gen_kwargs
 
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,7 @@ class GGUFLM(LM):
         base_url=None,
         model=None,
         max_length=2048,
+        max_gen_toks=256,
         timeout=300,
         temperature=0.0,
         parallel=None,
@@ -67,6 +69,7 @@ class GGUFLM(LM):
         self.model = model
         self.temperature = temperature
         self.max_length = max_length
+        self.max_gen_toks = int(max_gen_toks)
         self.timeout = timeout
         self.parallel = parallel
         self._resolved_parallel = None
@@ -271,7 +274,9 @@ class GGUFLM(LM):
     def _generate_one(self, args):
         inp, request_args = args
         until = request_args.get("until", ["</s>"])
-        max_gen_toks = request_args.get("max_gen_toks", None)
+        max_gen_toks = normalize_gen_kwargs(request_args, self.max_gen_toks)[
+            "max_gen_toks"
+        ]
         # no id_slot pinning here: generation lengths vary widely, so the
         # server's dynamic idle-slot assignment load-balances better than a
         # static assignment (measured ~30% slower with pinning on gsm8k)
