@@ -22,8 +22,7 @@ _FORCE_TOKEN_BIAS = 100
 
 @register_model("gguf", "ggml")
 class GGUFLM(LM):
-    """Evaluate GGUF models served by a llama.cpp server (llama-server)
-    through its OpenAI-compatible endpoints.
+    """Evaluate GGUF models served by a llama.cpp server (llama-server) through its OpenAI-compatible endpoints.
 
     Requires a llama.cpp version that returns logprobs in the modern
     OpenAI format (`logprobs.content`, see llama.cpp PR #10783; any release
@@ -83,7 +82,7 @@ class GGUFLM(LM):
                 response.raise_for_status()
                 return response.json()
             except RequestException as e:
-                logger.error(f"RequestException: {e}")
+                logger.error("RequestException: %s", e)
                 time.sleep(delay)  # wait before retrying
         raise RuntimeError(f"Failed to get a valid response after {retries} retries.")
 
@@ -104,9 +103,7 @@ class GGUFLM(LM):
         return ids
 
     def _detect_total_slots(self):
-        """Query the server's /props endpoint for its slot count
-        (llama-server's `--parallel` setting). Returns None if unavailable.
-        """
+        """Query the server's /props endpoint for its slot count (llama-server's `--parallel` setting). Returns None if unavailable."""
         try:
             params = {"model": self.model} if self.model is not None else None
             response = requests.get(
@@ -117,7 +114,7 @@ class GGUFLM(LM):
             if isinstance(total_slots, int) and total_slots > 0:
                 return total_slots
         except (RequestException, ValueError) as e:
-            logger.debug(f"Could not query /props for slot count: {e}")
+            logger.debug("Could not query /props for slot count: %s", e)
         return None
 
     def _resolve_parallel(self):
@@ -129,16 +126,14 @@ class GGUFLM(LM):
                 self._resolved_parallel = total_slots or 1
                 if total_slots:
                     logger.info(
-                        f"Auto-detected {total_slots} llama.cpp server slots; "
-                        f"issuing up to {total_slots} concurrent requests. "
-                        "Override with `parallel=<N>`."
+                        "Auto-detected %s llama.cpp server slots; issuing up to %s concurrent requests. Override with `parallel=<N>`.",
+                        total_slots,
+                        total_slots,
                     )
         return self._resolved_parallel
 
     def _map_requests(self, fn, items, disable_tqdm):
-        """Apply fn to each item, preserving order, using a thread pool when
-        parallelism is enabled.
-        """
+        """Apply fn to each item, preserving order, using a thread pool when parallelism is enabled."""
         parallel = self._resolve_parallel()
         if parallel <= 1 or len(items) <= 1:
             return [fn(item) for item in tqdm(items, disable=disable_tqdm)]
@@ -227,7 +222,7 @@ class GGUFLM(LM):
         # (BPE-correct: matches the HF backend's tok_encode approach)
         whole_ids = self._tokenize(context + continuation, add_special=True)
         context_ids = self._tokenize(context, add_special=True)
-        continuation_ids = whole_ids[len(context_ids):]
+        continuation_ids = whole_ids[len(context_ids) :]
         if not continuation_ids:
             return (0.0, True)
         total = 0.0
@@ -288,10 +283,12 @@ class GGUFLM(LM):
             if "text" in choice:
                 return choice["text"].strip()
             else:
-                logger.error(f"Invalid response for greedy_until. Response: {response}")
+                logger.error(
+                    "Invalid response for greedy_until. Response: %s", response
+                )
                 return None  # Add default value in case of error
         else:
-            logger.error(f"Invalid response for greedy_until. Response: {response}")
+            logger.error("Invalid response for greedy_until. Response: %s", response)
             return None  # Add default value in case of error
 
     def generate_until(self, requests, disable_tqdm: bool = False):
