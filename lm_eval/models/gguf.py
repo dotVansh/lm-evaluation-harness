@@ -34,6 +34,11 @@ class GGUFLM(LM):
     When the server runs in router mode (multiple models), also pass
     `model=<name-or-alias>` so requests are routed correctly.
 
+    Servers that require authentication are supported: pass `api_key=<key>`
+    to send `Authorization: Bearer <key>` with every request (`/tokenize`,
+    `/props` and `/v1/completions` alike), or `header=<dict>` to set
+    arbitrary headers instead, replacing the Bearer default.
+
     Requests are issued concurrently with a thread pool. By default the
     degree of parallelism is auto-detected from the server's `/props`
     endpoint (`total_slots`, i.e. llama-server's `--parallel` setting);
@@ -51,6 +56,8 @@ class GGUFLM(LM):
         timeout=300,
         temperature=0.0,
         parallel=None,
+        api_key=None,
+        header=None,
         **kwargs,
     ):
         super().__init__()
@@ -74,11 +81,19 @@ class GGUFLM(LM):
         self._resolved_parallel = None
         self._tok_cache = {}
         self._tok_lock = threading.Lock()
+        if header:
+            self._headers = dict(header)
+        elif api_key:
+            self._headers = {"Authorization": f"Bearer {api_key}"}
+        else:
+            self._headers = None
 
     def _post_with_retries(self, url, payload, retries=3, delay=5):
         for _ in range(retries):
             try:
-                response = requests.post(url, json=payload, timeout=self.timeout)
+                response = requests.post(
+                    url, json=payload, timeout=self.timeout, headers=self._headers
+                )
                 response.raise_for_status()
                 return response.json()
             except RequestException as e:
@@ -107,7 +122,10 @@ class GGUFLM(LM):
         try:
             params = {"model": self.model} if self.model is not None else None
             response = requests.get(
-                f"{self.server_url}/props", params=params, timeout=10
+                f"{self.server_url}/props",
+                params=params,
+                timeout=10,
+                headers=self._headers,
             )
             response.raise_for_status()
             total_slots = response.json().get("total_slots")

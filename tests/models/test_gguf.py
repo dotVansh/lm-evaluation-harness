@@ -250,6 +250,58 @@ class GGUFLMTest(unittest.TestCase):
             self.assertEqual(lm.completions_url, expected)
             self.assertEqual(lm.server_url, "http://localhost:8080")
 
+    def test_api_key_sent_on_every_post_request(self):
+        """api_key reaches /tokenize and /v1/completions as a Bearer header."""
+        fake_post, _ = make_fake_server(token_logprobs={97: -1.0})
+        with patch(
+            "lm_eval.models.gguf.requests.post", side_effect=fake_post
+        ) as mock_post:
+            lm = GGUFLM(base_url, api_key="sekret", parallel=1)
+            lm.loglikelihood(llm_instances([("x", "a")]))
+        expected = {"Authorization": "Bearer sekret"}
+        self.assertEqual(len(mock_post.call_args_list), 3)  # tokenize, tokenize, score
+        for call in mock_post.call_args_list:
+            self.assertEqual(call.kwargs["headers"], expected)
+
+    def test_api_key_sent_on_props(self):
+        """The /props slot probe carries the auth header too, or a keyed server makes
+        parallelism detection silently fall back to serial requests.
+        """
+        with patch("lm_eval.models.gguf.requests.get") as mock_get:
+            mock_get.return_value.json.return_value = {"total_slots": 2}
+            lm = GGUFLM(base_url, api_key="sekret")
+            self.assertEqual(lm._detect_total_slots(), 2)
+        self.assertEqual(
+            mock_get.call_args.kwargs["headers"],
+            {"Authorization": "Bearer sekret"},
+        )
+
+    def test_no_api_key_sends_no_auth_header(self):
+        fake_post, _ = make_fake_server()
+        with patch(
+            "lm_eval.models.gguf.requests.post", side_effect=fake_post
+        ) as mock_post:
+            lm = GGUFLM(base_url, parallel=1)
+            lm._tokenize("x", add_special=True)
+        self.assertIsNone(mock_post.call_args.kwargs["headers"])
+
+    def test_header_replaces_bearer_default(self):
+        """Same semantics as TemplateAPI: an explicit `header` dict replaces the
+        Bearer default rather than merging with it.
+        """
+        fake_post, _ = make_fake_server()
+        with patch(
+            "lm_eval.models.gguf.requests.post", side_effect=fake_post
+        ) as mock_post:
+            lm = GGUFLM(
+                base_url,
+                api_key="sekret",
+                header={"X-Api-Key": "custom"},
+                parallel=1,
+            )
+            lm._tokenize("x", add_special=True)
+        self.assertEqual(mock_post.call_args.kwargs["headers"], {"X-Api-Key": "custom"})
+
 
 if __name__ == "__main__":
     unittest.main()
