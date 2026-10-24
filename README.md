@@ -201,6 +201,8 @@ Optional `--model_args` settings:
 - `api_key=your-key`: authenticate to a server started with `--api-key`.
 - `parallel=4`: override concurrency, which defaults to the server's slot count.
 - `max_gen_toks=2048`: change the default generation limit of 256 tokens.
+- `max_retries=5,retry_delay=5,retry_max_delay=60`: configure retries for transient
+  failures, with capped exponential backoff. Set `max_retries=0` to disable them.
 
 Pass sampling settings through `--gen_kwargs`. Omitted penalties use the server's
 defaults, so set them explicitly when comparing backends:

@@ -1,10 +1,20 @@
 import logging
+import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 import requests
-from requests.exceptions import RequestException
+from requests.exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    HTTPError,
+    JSONDecodeError,
+    RequestException,
+    Timeout,
+)
 from tqdm import tqdm
 
 from lm_eval.api.model import LM
@@ -58,6 +68,9 @@ class GGUFLM(LM):
         parallel=None,
         api_key=None,
         header=None,
+        max_retries=5,
+        retry_delay=5,
+        retry_max_delay=60,
         **kwargs,
     ):
         super().__init__()
@@ -77,6 +90,14 @@ class GGUFLM(LM):
         self.max_length = max_length
         self.max_gen_toks = int(max_gen_toks)
         self.timeout = timeout
+        self.max_retries = int(max_retries)
+        self.retry_delay = float(retry_delay)
+        self.retry_max_delay = float(retry_max_delay)
+        if self.max_retries < 0 or any(
+            not math.isfinite(value) or value < 0
+            for value in (self.retry_delay, self.retry_max_delay)
+        ):
+            raise ValueError("Retry counts and delays must be finite and nonnegative.")
         self.parallel = parallel
         self._resolved_parallel = None
         self._tok_cache = {}
@@ -88,18 +109,68 @@ class GGUFLM(LM):
         else:
             self._headers = None
 
-    def _post_with_retries(self, url, payload, retries=3, delay=5):
-        for _ in range(retries):
+    def _post_request(self, url, payload):
+        """Transport hook for adapters that supply their own authenticated session."""
+        return requests.post(
+            url, json=payload, timeout=self.timeout, headers=self._headers
+        )
+
+    def _post_with_retries(self, url, payload, retries=None, delay=None):
+        # `retries` historically counts attempts, including the first request.
+        attempts = self.max_retries + 1 if retries is None else max(1, int(retries))
+        backoff = self.retry_delay if delay is None else max(0.0, float(delay))
+        for attempt in range(attempts):
             try:
-                response = requests.post(
-                    url, json=payload, timeout=self.timeout, headers=self._headers
-                )
+                response = self._post_request(url, payload)
                 response.raise_for_status()
                 return response.json()
-            except RequestException as e:
-                logger.error("RequestException: %s", e)
-                time.sleep(delay)  # wait before retrying
-        raise RuntimeError(f"Failed to get a valid response after {retries} retries.")
+            except RequestException as exc:
+                response = getattr(exc, "response", None)
+                status = getattr(response, "status_code", None)
+                if isinstance(exc, HTTPError):
+                    if status not in (408, 429) and not (
+                        status is not None and 500 <= status < 600
+                    ):
+                        raise
+                elif not isinstance(
+                    exc,
+                    (ConnectionError, Timeout, ChunkedEncodingError, JSONDecodeError),
+                ):
+                    raise
+                if attempt + 1 == attempts:
+                    raise RuntimeError(
+                        f"Failed to get a valid response after {attempts} attempts."
+                    ) from exc
+
+                wait = min(backoff, self.retry_max_delay)
+                retry_after = (
+                    response.headers.get("Retry-After")
+                    if response is not None
+                    else None
+                )
+                if retry_after:
+                    try:
+                        requested_wait = float(retry_after)
+                    except ValueError:
+                        try:
+                            requested_wait = (
+                                parsedate_to_datetime(retry_after)
+                                - datetime.now(timezone.utc)
+                            ).total_seconds()
+                        except (ValueError, TypeError, OverflowError):
+                            requested_wait = 0.0
+                    if math.isfinite(requested_wait):
+                        wait = max(wait, min(requested_wait, self.retry_max_delay))
+                logger.warning(
+                    "GGUF request failed (%s%s); retrying in %.1fs (attempt %s/%s).",
+                    type(exc).__name__,
+                    f", HTTP {status}" if status is not None else "",
+                    wait,
+                    attempt + 1,
+                    attempts,
+                )
+                time.sleep(wait)
+                backoff = min(backoff * 2, self.retry_max_delay)
 
     def _tokenize(self, text, add_special):
         """Tokenize text with the server's own tokenizer (cached)."""

@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import patch
 
+import requests
+
 from lm_eval.api.instance import Instance
 from lm_eval.models.gguf import GGUFLM
 
@@ -79,6 +81,91 @@ def llm_instances(args_list, request_type="loglikelihood"):
 
 
 class GGUFLMTest(unittest.TestCase):
+    def test_retry_backoff_is_exponential_and_capped(self):
+        lm = GGUFLM(base_url, retry_delay=2, retry_max_delay=5)
+        failures = [requests.ConnectionError("server restarting")] * 5
+        with (
+            patch.object(
+                lm, "_post_request", side_effect=[*failures, FakeResponse({"ok": True})]
+            ) as post,
+            patch("lm_eval.models.gguf.time.sleep") as sleep,
+        ):
+            self.assertEqual(
+                lm._post_with_retries(lm.completions_url, {}), {"ok": True}
+            )
+        self.assertEqual(post.call_count, 6)
+        self.assertEqual(
+            [call.args[0] for call in sleep.call_args_list], [2, 4, 5, 5, 5]
+        )
+
+    def test_exhausted_retries_preserve_cause_without_a_final_sleep(self):
+        lm = GGUFLM(base_url, max_retries=2)
+        error = requests.ConnectionError("server crashed")
+        with (
+            patch.object(lm, "_post_request", side_effect=error) as post,
+            patch("lm_eval.models.gguf.time.sleep") as sleep,
+            self.assertRaisesRegex(RuntimeError, "after 3 attempts") as raised,
+        ):
+            lm._post_with_retries(lm.completions_url, {})
+        self.assertIs(raised.exception.__cause__, error)
+        self.assertEqual(post.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_client_errors_fail_immediately(self):
+        lm = GGUFLM(base_url)
+        for status in (400, 401, 403, 404, 422):
+            response = requests.Response()
+            response.status_code = status
+            with (
+                self.subTest(status=status),
+                patch.object(lm, "_post_request", return_value=response) as post,
+                patch("lm_eval.models.gguf.time.sleep") as sleep,
+                self.assertRaises(requests.HTTPError),
+            ):
+                lm._post_with_retries(lm.completions_url, {})
+            self.assertEqual(post.call_count, 1)
+            sleep.assert_not_called()
+
+    def test_transient_http_errors_honor_capped_retry_after(self):
+        for status in (408, 429, 500, 502, 503, 504):
+            lm = GGUFLM(base_url, retry_delay=1, retry_max_delay=10)
+            response = requests.Response()
+            response.status_code = status
+            response.headers["Retry-After"] = "120"
+            with (
+                self.subTest(status=status),
+                patch.object(
+                    lm,
+                    "_post_request",
+                    side_effect=[response, FakeResponse({"ok": True})],
+                ),
+                patch("lm_eval.models.gguf.time.sleep") as sleep,
+            ):
+                self.assertEqual(
+                    lm._post_with_retries(lm.completions_url, {}), {"ok": True}
+                )
+            sleep.assert_called_once_with(10)
+
+    def test_zero_retries_makes_one_attempt(self):
+        lm = GGUFLM(base_url, max_retries=0)
+        with (
+            patch.object(lm, "_post_request", side_effect=requests.Timeout()) as post,
+            patch("lm_eval.models.gguf.time.sleep") as sleep,
+            self.assertRaisesRegex(RuntimeError, "after 1 attempts"),
+        ):
+            lm._post_with_retries(lm.completions_url, {})
+        self.assertEqual(post.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_invalid_retry_configuration_is_rejected(self):
+        for kwargs in (
+            {"max_retries": -1},
+            {"retry_delay": -1},
+            {"retry_max_delay": "nan"},
+        ):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                GGUFLM(base_url, **kwargs)
+
     def test_loglikelihood_scoring(self):
         fake_post, calls = make_fake_server(
             token_logprobs={97: -0.5, 98: -2.0}  # 'a', 'b'
