@@ -173,9 +173,13 @@ class GGUFLM(LM):
         id_slot=None,
         **kwargs,
     ):
+        # llama.cpp calls the HF repetition_penalty knob repeat_penalty.
+        if "repetition_penalty" in kwargs:
+            kwargs.setdefault("repeat_penalty", kwargs.pop("repetition_penalty"))
         request = {
-            "prompt": context,
             "temperature": self.temperature,
+            **kwargs,
+            "prompt": context,
         }
         if self.model is not None:
             request["model"] = self.model
@@ -287,14 +291,19 @@ class GGUFLM(LM):
     def _generate_one(self, args):
         inp, request_args = args
         until = request_args.get("until", ["</s>"])
-        max_gen_toks = normalize_gen_kwargs(request_args, self.max_gen_toks)[
-            "max_gen_toks"
-        ]
+        gen_kwargs = normalize_gen_kwargs(
+            {"temperature": self.temperature, **request_args}, self.max_gen_toks
+        )
+        max_gen_toks = gen_kwargs.pop("max_gen_toks")
+        gen_kwargs.pop("until")
+        # llama.cpp expresses greedy decoding as temperature=0, rather than
+        # accepting the HF do_sample flag. normalize_gen_kwargs resolves both.
+        gen_kwargs.pop("do_sample")
         # no id_slot pinning here: generation lengths vary widely, so the
         # server's dynamic idle-slot assignment load-balances better than a
         # static assignment (measured ~30% slower with pinning on gsm8k)
         response = self.gguf_completion(
-            context=inp, stop=until, max_tokens=max_gen_toks
+            context=inp, stop=until, max_tokens=max_gen_toks, **gen_kwargs
         )
         if response and "choices" in response and response["choices"]:
             choice = response["choices"][0]

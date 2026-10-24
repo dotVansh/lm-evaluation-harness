@@ -205,6 +205,55 @@ class GGUFLMTest(unittest.TestCase):
         res = lm._map_requests(lambda x: x * 2, items, disable_tqdm=True)
         self.assertEqual(res, [x * 2 for x in items])
 
+    def test_generation_sampling_kwargs_and_greedy_override(self):
+        fake_post, calls = make_fake_server()
+        gen_kwargs = {
+            "until": ["STOP"],
+            "max_new_tokens": 17,
+            "do_sample": False,
+            "temperature": 0.8,
+            "presence_penalty": 0.0,
+            "frequency_penalty": 0.2,
+            "repetition_penalty": 1.1,
+            "top_p": 0.9,
+            "top_k": 30,
+            "min_p": 0.05,
+            "seed": 1234,
+        }
+        with patch("lm_eval.models.gguf.requests.post", side_effect=fake_post):
+            lm = GGUFLM(base_url, parallel=1, temperature=0.7)
+            lm.generate_until(llm_instances([("x", gen_kwargs)], "generate_until"))
+        self.assertEqual(
+            calls["completions"][0],
+            {
+                "prompt": "x",
+                "stop": ["STOP"],
+                "max_tokens": 17,
+                "temperature": 0.0,
+                "presence_penalty": 0.0,
+                "frequency_penalty": 0.2,
+                "repeat_penalty": 1.1,
+                "top_p": 0.9,
+                "top_k": 30,
+                "min_p": 0.05,
+                "seed": 1234,
+            },
+        )
+        self.assertEqual(gen_kwargs["temperature"], 0.8)
+        self.assertIn("repetition_penalty", gen_kwargs)
+
+    def test_generation_task_temperature_overrides_model_default(self):
+        fake_post, calls = make_fake_server()
+        with patch("lm_eval.models.gguf.requests.post", side_effect=fake_post):
+            lm = GGUFLM(base_url, parallel=1, temperature=0.7)
+            lm.generate_until(
+                llm_instances(
+                    [("x", {}), ("y", {"temperature": 0.3, "do_sample": True})],
+                    "generate_until",
+                )
+            )
+        self.assertEqual([c["temperature"] for c in calls["completions"]], [0.7, 0.3])
+
     def test_assign_slots_by_context(self):
         # consecutive same-context requests share a slot; groups round-robin
         args = [
